@@ -7,3 +7,5 @@ models
 *.log
 *.tsbuildinfo
 .trae
+.venv-chattts
+__pycache__

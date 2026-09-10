@@ -310,6 +310,46 @@ async function synthesizeWithZipvoice(
   writeWavPcm(outPath, audio.samples as Float32Array, audio.sampleRate as number)
 }
 
+// ---- ChatTTS 引擎（Python 微服务，PyTorch + CUDA，固化 speaker 音色） ----
+
+const CHATTTS_SERVICE_URL = (process.env.CHATTTS_SERVICE_URL || 'http://127.0.0.1:8788').replace(/\/$/, '')
+
+async function synthesizeWithChatTts(
+  text: string,
+  voiceKey: string,
+  outPath: string,
+  emotion?: string,
+  speedFactor = 1,
+): Promise<void> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 120000)
+  try {
+    const resp = await fetch(`${CHATTTS_SERVICE_URL}/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice: voiceKey, speed: speedFactor, emotion: emotion || 'calm' }),
+      signal: controller.signal,
+    })
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => '')
+      throw new Error(`ChatTTS 服务返回 ${resp.status}: ${detail.slice(0, 200)}`)
+    }
+    const buf = Buffer.from(await resp.arrayBuffer())
+    if (buf.length < 100) throw new Error('ChatTTS 服务返回音频为空')
+    fs.writeFileSync(outPath, buf)
+  } catch (e: any) {
+    if (e?.name === 'AbortError') {
+      throw new Error(`ChatTTS 服务请求超时（120s），请确认微服务已启动：${CHATTTS_SERVICE_URL}`)
+    }
+    if (e?.cause?.code === 'ECONNREFUSED') {
+      throw new Error(`无法连接 ChatTTS 微服务（${CHATTTS_SERVICE_URL}），请先启动 chattts-service`)
+    }
+    throw e
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // 统一合成入口：按配置选择引擎
 export async function synthesize(
   text: string,
@@ -329,6 +369,11 @@ export async function synthesize(
     await synthesizeWithZipvoice(text, voiceShortName, outPath, emotion, speedFactor)
     return
   }
+  if (TTS_ENGINE === 'chattts') {
+    // ChatTTS 用固化 speaker 音色 id（如 ct-male-1），由 Python 微服务合成
+    await synthesizeWithChatTts(text, voiceShortName, outPath, emotion, speedFactor)
+    return
+  }
   // Edge TTS
   const tts = new MsEdgeTTS(makeAgent())
   try {
@@ -339,11 +384,11 @@ export async function synthesize(
 }
 
 // 根据文件大小估算时长（秒）
-// 本地 sherpa-onnx 引擎 WAV: 24kHz 16-bit mono = 48000 bytes/s（减去 44 字节文件头）
+// 本地引擎 WAV（kokoro/zipvoice/chattts）: 24kHz 16-bit mono = 48000 bytes/s（减去 44 字节文件头）
 // Edge MP3: 96kbit/s = 12000 bytes/s
 function estimateDuration(filePath: string): number {
   const stat = fs.statSync(filePath)
-  if (TTS_ENGINE === 'kokoro' || TTS_ENGINE === 'zipvoice') {
+  if (TTS_ENGINE === 'kokoro' || TTS_ENGINE === 'zipvoice' || TTS_ENGINE === 'chattts') {
     const dataBytes = Math.max(0, stat.size - 44)
     return Math.ceil(dataBytes / 48000)
   }
@@ -358,8 +403,8 @@ export async function synthesizeBatch(
   onError?: (index: number, segmentId: string, message: string) => void,
   speedFactor?: number,
 ): Promise<void> {
-  if (TTS_ENGINE === 'kokoro' || TTS_ENGINE === 'zipvoice') {
-    // 本地 sherpa-onnx 引擎批量合成：每段之间让出事件循环，避免长时间阻塞其它请求
+  if (TTS_ENGINE === 'kokoro' || TTS_ENGINE === 'zipvoice' || TTS_ENGINE === 'chattts') {
+    // 本地引擎（sherpa-onnx / ChatTTS 微服务）批量合成：每段之间让出事件循环，避免长时间阻塞其它请求
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
       const outPath = audioPath(bookId, item.segmentId)

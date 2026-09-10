@@ -64,11 +64,31 @@ const ZIPVOICE_VOICES: VoiceOption[] = [
   { shortName: 'zv-newsf2', name: '新闻女声B', gender: 'female', style: '沉稳女声 · 播报' },
 ]
 
+// ChatTTS 固化 speaker 音色（shortName 为 chattts-service/voices.json 中的音色 id）
+// 由 curate_voices.py 随机采样 + F0 性别筛选后人工挑选，id 与 spk 绑定，跨会话稳定
+const CHAT_TTS_VOICES: VoiceOption[] = [
+  // 旁白候选
+  { shortName: 'ct-male-1', name: '沉稳男声', gender: 'male', style: '沉稳男声 · 旁白首选' },
+  { shortName: 'ct-female-1', name: '温暖女声', gender: 'female', style: '温暖女声 · 旁白首选' },
+  { shortName: 'ct-male-2', name: '醇厚男声', gender: 'male', style: '醇厚男声 · 叙述感' },
+  // 男角色
+  { shortName: 'ct-male-3', name: '清朗青年', gender: 'male', style: '青年男声 · 清朗' },
+  { shortName: 'ct-male-4', name: '磁性男声', gender: 'male', style: '成熟男声 · 磁性' },
+  { shortName: 'ct-male-5', name: '少年男声', gender: 'male', style: '少年男声 · 活泼' },
+  // 女角色
+  { shortName: 'ct-female-2', name: '清甜少女', gender: 'female', style: '清甜女声 · 少女' },
+  { shortName: 'ct-female-3', name: '活泼女声', gender: 'female', style: '活泼女声 · 少女' },
+  { shortName: 'ct-female-4', name: '知性女声', gender: 'female', style: '知性女声 · 端庄' },
+  { shortName: 'ct-female-5', name: '温柔女声', gender: 'female', style: '温柔女声 · 亲和' },
+  { shortName: 'ct-female-6', name: '清冷女声', gender: 'female', style: '清冷女声 · 御姐' },
+]
+
 const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'
 
 export const VOICES: VoiceOption[] =
   TTS_ENGINE === 'kokoro' ? KOKORO_VOICES :
-  TTS_ENGINE === 'zipvoice' ? ZIPVOICE_VOICES : EDGE_VOICES
+  TTS_ENGINE === 'zipvoice' ? ZIPVOICE_VOICES :
+  TTS_ENGINE === 'chattts' ? CHAT_TTS_VOICES : EDGE_VOICES
 
 // 按性别给角色推荐默认音色
 export function defaultVoiceFor(gender: string): string {
@@ -81,6 +101,11 @@ export function defaultVoiceFor(gender: string): string {
     if (gender === 'female') return 'zv-xiaoyi'
     if (gender === 'male') return 'zv-yunxi'
     return 'zv-yunyang' // neutral（旁白）默认沉稳男声
+  }
+  if (TTS_ENGINE === 'chattts') {
+    if (gender === 'female') return 'ct-female-2'
+    if (gender === 'male') return 'ct-male-3'
+    return 'ct-male-1' // neutral（旁白）默认沉稳男声
   }
   if (gender === 'female') return 'zh-CN-XiaoyiNeural'
   if (gender === 'male') return 'zh-CN-YunxiNeural'

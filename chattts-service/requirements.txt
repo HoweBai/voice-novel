@@ -1,0 +1,9 @@
+# 注意：torch/torchaudio 需先用 CUDA 索引安装：
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+# 然后再：pip install -r requirements.txt
+ChatTTS>=0.2.4
+fastapi>=0.115
+uvicorn>=0.32
+soundfile>=0.12
+numpy>=1.26
+pydantic>=2.9
