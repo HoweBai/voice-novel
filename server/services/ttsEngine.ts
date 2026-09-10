@@ -2,7 +2,10 @@ import { MsEdgeTTS, OUTPUT_FORMAT, ProsodyOptions } from 'msedge-tts'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 import { audioPath, audioRelUrl } from '../storage.js'
+
+const require = createRequire(import.meta.url)
 
 const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'
 
@@ -88,7 +91,11 @@ let kokoroTts: any = null
 async function getKokoroTts(): Promise<any> {
   if (kokoroTts) return kokoroTts
   const modelPath = process.env.KOKORO_MODEL_PATH || './models/kokoro'
-  const sherpa = await import('sherpa-onnx-node')
+  console.log('[kokoro] 开始加载模型...')
+  const t0 = Date.now()
+  // 用 createRequire 加载 CJS 模块，避免 ESM 动态 import 时命名导出挂在 default 上
+  const sherpa = require('sherpa-onnx-node')
+  console.log('[kokoro] sherpa-onnx-node 已加载，OfflineTts:', typeof sherpa.OfflineTts)
   const config = {
     model: {
       kokoro: {
@@ -104,6 +111,7 @@ async function getKokoroTts(): Promise<any> {
     provider: 'cpu',
   }
   kokoroTts = await sherpa.OfflineTts.createAsync(config)
+  console.log(`[kokoro] 模型加载完成 (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
   return kokoroTts
 }
 
@@ -113,48 +121,42 @@ const KOKORO_SPEED: Record<string, number> = {
   angry: 1.2, serious: 0.95, gentle: 0.92, fearful: 1.08,
 }
 
-function synthesizeWithKokoro(
+async function synthesizeWithKokoro(
   text: string,
   voiceId: number,
   outPath: string,
   emotion?: string,
 ): Promise<void> {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const tts = await getKokoroTts()
-      const speed = KOKORO_SPEED[emotion || 'calm'] || 1.0
-      const audio = tts.generate({
-        text,
-        generationConfig: { sid: voiceId, speed, silenceScale: 0.2 },
-      })
-      // sherpa-onnx 输出 WAV，直接写入文件
-      const samples = audio.samples as Float32Array
-      const sampleRate = audio.sampleRate as number
-      // 写 WAV 文件
-      const buffer = Buffer.alloc(44 + samples.length * 2)
-      buffer.write('RIFF', 0)
-      buffer.writeUInt32LE(36 + samples.length * 2, 4)
-      buffer.write('WAVE', 8)
-      buffer.write('fmt ', 12)
-      buffer.writeUInt32LE(16, 16)
-      buffer.writeUInt16LE(1, 20)
-      buffer.writeUInt16LE(1, 22)
-      buffer.writeUInt32LE(sampleRate, 24)
-      buffer.writeUInt32LE(sampleRate * 2, 28)
-      buffer.writeUInt16LE(2, 32)
-      buffer.writeUInt16LE(16, 34)
-      buffer.write('data', 36)
-      buffer.writeUInt32LE(samples.length * 2, 40)
-      for (let i = 0; i < samples.length; i++) {
-        const s = Math.max(-1, Math.min(1, samples[i]))
-        buffer.writeInt16LE(Math.round(s * 32767), 44 + i * 2)
-      }
-      fs.writeFileSync(outPath, buffer)
-      resolve()
-    } catch (e) {
-      reject(e)
-    }
+  const tts = await getKokoroTts()
+  const speed = KOKORO_SPEED[emotion || 'calm'] || 1.0
+  // 使用 generateAsync 避免同步 generate 阻塞 Node.js 事件循环
+  const audio = await tts.generateAsync({
+    text,
+    generationConfig: { sid: voiceId, speed, silenceScale: 0.2 },
   })
+  // sherpa-onnx 输出 WAV，直接写入文件
+  const samples = audio.samples as Float32Array
+  const sampleRate = audio.sampleRate as number
+  // 写 WAV 文件
+  const buffer = Buffer.alloc(44 + samples.length * 2)
+  buffer.write('RIFF', 0)
+  buffer.writeUInt32LE(36 + samples.length * 2, 4)
+  buffer.write('WAVE', 8)
+  buffer.write('fmt ', 12)
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(sampleRate * 2, 28)
+  buffer.writeUInt16LE(2, 32)
+  buffer.writeUInt16LE(16, 34)
+  buffer.write('data', 36)
+  buffer.writeUInt32LE(samples.length * 2, 40)
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    buffer.writeInt16LE(Math.round(s * 32767), 44 + i * 2)
+  }
+  fs.writeFileSync(outPath, buffer)
 }
 
 // 统一合成入口：按配置选择引擎
@@ -187,7 +189,7 @@ export async function synthesizeBatch(
   onError?: (index: number, segmentId: string, message: string) => void,
 ): Promise<void> {
   if (TTS_ENGINE === 'kokoro') {
-    // Kokoro 批量合成
+    // Kokoro 批量合成：每段之间让出事件循环，避免长时间阻塞其它请求
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
       const outPath = audioPath(bookId, item.segmentId)
@@ -205,6 +207,8 @@ export async function synthesizeBatch(
       } catch (e: any) {
         onError?.(i, item.segmentId, e?.message || 'TTS 失败')
       }
+      // 让出事件循环，让其它请求得以处理
+      await new Promise((r) => setImmediate(r))
     }
     return
   }

@@ -1,10 +1,28 @@
 import { useCallback } from 'react'
 import axios from 'axios'
-import type { Chapter, Character, Segment } from '../types'
+import type { Chapter, Character, Segment, VoiceOption } from '../types'
 import { useAppStore } from '../store/appStore'
-import { defaultVoiceFor } from '../lib/constants'
+import { defaultVoiceFor, VOICES as FALLBACK_VOICES } from '../lib/constants'
 
 const api = axios.create({ baseURL: '' })
+
+// 按性别从可用音色中挑默认音色；优先用后端返回的（Kokoro/Edge），否则用内置目录
+function pickDefaultVoice(gender: string, voices: VoiceOption[]): string {
+  const list = voices.length > 0 ? voices : FALLBACK_VOICES
+  const byGender =
+    gender === 'female'
+      ? list.find((v) => v.gender === 'female')
+      : gender === 'male'
+        ? list.find((v) => v.gender === 'male')
+        : null
+  // 旁白（neutral）：优先取标记为"旁白首选"的，否则第一个
+  const narrator =
+    gender === 'neutral'
+      ? list.find((v) => v.style?.includes('旁白首选')) || list[0]
+      : null
+  const picked = byGender || narrator || list[0]
+  return picked?.shortName || defaultVoiceFor(gender)
+}
 
 export interface UploadResponse {
   bookId: string
@@ -58,6 +76,7 @@ export function useApi() {
     const total = book.chapters.length
     let mergedChars: Character[] = []
     const charById = new Map<string, Character>()
+    const voices = useAppStore.getState().voices
 
     for (let i = 0; i < total; i++) {
       const ch = book.chapters[i]
@@ -67,8 +86,8 @@ export function useApi() {
         // 合并角色：按名字去重
         for (const c of data.characters) {
           if (!charById.has(c.id) && !Array.from(charById.values()).some((x) => x.name === c.name)) {
-            // 给默认音色（除非已是 narrator）
-            const voice = c.id === 'narrator' ? 'zh-CN-XiaoxiaoNeural' : defaultVoiceFor(c.gender)
+            // 按性别从可用音色中挑默认音色（适配 Kokoro/Edge 引擎切换）
+            const voice = pickDefaultVoice(c.gender, voices)
             charById.set(c.id, { ...c, voiceId: voice })
           }
         }

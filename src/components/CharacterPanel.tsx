@@ -1,17 +1,21 @@
 import { useState } from 'react'
 import { useAppStore, useActiveChapter, useCharacters } from '../store/appStore'
 import { useApi } from '../hooks/useApi'
-import { VOICES, colorForCharacter } from '../lib/constants'
+import { VOICES as FALLBACK_VOICES, colorForCharacter } from '../lib/constants'
 
 export default function CharacterPanel() {
   const { book, error } = useAppStore()
   const characters = useCharacters()
   const chapter = useActiveChapter()
+  const storeVoices = useAppStore((s) => s.voices)
   const { assignVoice, setError } = useAppStore()
   const { generateChapter: apiGenerate } = useApi()
   const [previewing, setPreviewing] = useState<string | null>(null)
 
   if (!book || !chapter) return null
+
+  // 以后端 API 返回的音色列表为准（Kokoro/Edge 引擎切换），未拿到时回退内置目录
+  const voices = storeVoices.length > 0 ? storeVoices : FALLBACK_VOICES
 
   const handlePreview = async (voiceId: string, name: string) => {
     setPreviewing(voiceId)
@@ -86,7 +90,7 @@ export default function CharacterPanel() {
                 onChange={(e) => assignVoice(c.id, e.target.value)}
                 className="bg-ink-800 border border-ink-600 rounded-lg px-3 py-2 text-sm text-ink-100 focus:outline-none focus:border-ember-400 min-w-[160px]"
               >
-                {VOICES.map((v) => (
+                {voices.map((v) => (
                   <option key={v.shortName} value={v.shortName}>
                     {v.name} · {v.style}
                   </option>
@@ -94,7 +98,7 @@ export default function CharacterPanel() {
               </select>
 
               <button
-                onClick={() => handlePreview(c.voiceId || 'zh-CN-XiaoxiaoNeural', c.name)}
+                onClick={() => handlePreview(c.voiceId || voices[0]?.shortName || '', c.name)}
                 className="px-3 py-2 rounded-lg border border-ink-600 text-ink-300 hover:border-ember-400 hover:text-ember-400 transition text-sm whitespace-nowrap"
                 disabled={previewing === c.voiceId}
               >

@@ -10,12 +10,19 @@ interface GenerateBody {
   assignments: Record<string, string> // characterId -> voiceShortName
 }
 
+// 批量生成锁：防止多个 generate 请求并发执行导致 CPU 饱和
+let generateLock = false
+
 // POST /api/tts/generate
 // 接收 { bookId, segments, assignments }，逐段生成音频，通过 SSE 推送进度
 router.post('/generate', async (req, res) => {
   const { bookId, segments, assignments } = req.body as GenerateBody
   if (!bookId || !segments || !assignments) {
     return res.status(400).json({ error: '缺少必要参数 bookId/segments/assignments' })
+  }
+
+  if (generateLock) {
+    return res.status(409).json({ error: '已有配音任务进行中，请等待完成后再试' })
   }
 
   res.setHeader('Content-Type', 'text/event-stream')
@@ -27,6 +34,7 @@ router.post('/generate', async (req, res) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`)
   }
 
+  generateLock = true
   try {
     const total = segments.length
     const items = segments.map((seg) => ({
@@ -54,6 +62,7 @@ router.post('/generate', async (req, res) => {
   } catch (err: any) {
     send({ type: 'fatal', message: err?.message || '生成过程异常' })
   } finally {
+    generateLock = false
     res.end()
   }
 })
