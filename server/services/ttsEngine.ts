@@ -1,7 +1,10 @@
 import { MsEdgeTTS, OUTPUT_FORMAT, ProsodyOptions } from 'msedge-tts'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import fs from 'node:fs'
+import path from 'node:path'
 import { audioPath, audioRelUrl } from '../storage.js'
+
+const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'
 
 // 情绪 → prosody 速率/音调映射
 const EMOTION_MAP: Record<string, ProsodyOptions> = {
@@ -28,21 +31,6 @@ function makeAgent() {
 }
 
 const MAX_RETRIES = 3
-
-// 单段合成（内部创建连接）
-export async function synthesize(
-  text: string,
-  voiceShortName: string,
-  outPath: string,
-  emotion?: string,
-): Promise<void> {
-  const tts = new MsEdgeTTS(makeAgent())
-  try {
-    await synthesizeWithTts(tts, text, voiceShortName, outPath, emotion)
-  } finally {
-    tts.close()
-  }
-}
 
 // 复用已有 TTS 连接合成单段（用于批量合成，减少连接建立开销）
 async function synthesizeWithTts(
@@ -93,19 +81,139 @@ export async function synthesizeSegment(
   return out
 }
 
-// 批量合成：复用同一个 WebSocket 连接，减少频繁建连导致的代理不稳定
+// ---- Kokoro TTS 引擎 ----
+
+let kokoroTts: any = null
+
+async function getKokoroTts(): Promise<any> {
+  if (kokoroTts) return kokoroTts
+  const modelPath = process.env.KOKORO_MODEL_PATH || './models/kokoro'
+  const sherpa = await import('sherpa-onnx-node')
+  const config = {
+    model: {
+      kokoro: {
+        model: path.join(modelPath, 'model.onnx'),
+        voices: path.join(modelPath, 'voices.bin'),
+        tokens: path.join(modelPath, 'tokens.txt'),
+        dataDir: path.join(modelPath, 'espeak-ng-data'),
+        lexicon: path.join(modelPath, 'lexicon-zh.txt'),
+      },
+    },
+    debug: false,
+    numThreads: 1,
+    provider: 'cpu',
+  }
+  kokoroTts = await sherpa.OfflineTts.createAsync(config)
+  return kokoroTts
+}
+
+// Kokoro 情绪 → 语速映射
+const KOKORO_SPEED: Record<string, number> = {
+  calm: 1.0, excited: 1.15, happy: 1.1, sad: 0.88,
+  angry: 1.2, serious: 0.95, gentle: 0.92, fearful: 1.08,
+}
+
+function synthesizeWithKokoro(
+  text: string,
+  voiceId: number,
+  outPath: string,
+  emotion?: string,
+): Promise<void> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const tts = await getKokoroTts()
+      const speed = KOKORO_SPEED[emotion || 'calm'] || 1.0
+      const audio = tts.generate({
+        text,
+        generationConfig: { sid: voiceId, speed, silenceScale: 0.2 },
+      })
+      // sherpa-onnx 输出 WAV，直接写入文件
+      const samples = audio.samples as Float32Array
+      const sampleRate = audio.sampleRate as number
+      // 写 WAV 文件
+      const buffer = Buffer.alloc(44 + samples.length * 2)
+      buffer.write('RIFF', 0)
+      buffer.writeUInt32LE(36 + samples.length * 2, 4)
+      buffer.write('WAVE', 8)
+      buffer.write('fmt ', 12)
+      buffer.writeUInt32LE(16, 16)
+      buffer.writeUInt16LE(1, 20)
+      buffer.writeUInt16LE(1, 22)
+      buffer.writeUInt32LE(sampleRate, 24)
+      buffer.writeUInt32LE(sampleRate * 2, 28)
+      buffer.writeUInt16LE(2, 32)
+      buffer.writeUInt16LE(16, 34)
+      buffer.write('data', 36)
+      buffer.writeUInt32LE(samples.length * 2, 40)
+      for (let i = 0; i < samples.length; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]))
+        buffer.writeInt16LE(Math.round(s * 32767), 44 + i * 2)
+      }
+      fs.writeFileSync(outPath, buffer)
+      resolve()
+    } catch (e) {
+      reject(e)
+    }
+  })
+}
+
+// 统一合成入口：按配置选择引擎
+export async function synthesize(
+  text: string,
+  voiceShortName: string,
+  outPath: string,
+  emotion?: string,
+): Promise<void> {
+  if (TTS_ENGINE === 'kokoro') {
+    // Kokoro 用数字 voiceId，从 voiceShortName 解析
+    const voiceId = parseInt(voiceShortName, 10) || 48
+    await synthesizeWithKokoro(text, voiceId, outPath, emotion)
+    return
+  }
+  // Edge TTS
+  const tts = new MsEdgeTTS(makeAgent())
+  try {
+    await synthesizeWithTts(tts, text, voiceShortName, outPath, emotion)
+  } finally {
+    tts.close()
+  }
+}
+
+// 批量合成
 export async function synthesizeBatch(
   bookId: string,
   items: { segmentId: string; text: string; voice: string; emotion?: string }[],
   onProgress?: (index: number, segmentId: string, audioUrl: string, durationSec: number) => void,
   onError?: (index: number, segmentId: string, message: string) => void,
 ): Promise<void> {
+  if (TTS_ENGINE === 'kokoro') {
+    // Kokoro 批量合成
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      const outPath = audioPath(bookId, item.segmentId)
+      const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 0
+      if (exists) {
+        const stat = fs.statSync(outPath)
+        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), Math.ceil(stat.size / 4000))
+        continue
+      }
+      try {
+        const voiceId = parseInt(item.voice, 10) || 48
+        await synthesizeWithKokoro(item.text, voiceId, outPath, item.emotion)
+        const stat = fs.statSync(outPath)
+        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), Math.ceil(stat.size / 4000))
+      } catch (e: any) {
+        onError?.(i, item.segmentId, e?.message || 'TTS 失败')
+      }
+    }
+    return
+  }
+  // Edge TTS 批量合成
   const tts = new MsEdgeTTS(makeAgent())
   try {
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
       const outPath = audioPath(bookId, item.segmentId)
-      // 已存在且非空则跳过
       const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 0
       if (exists) {
         const stat = fs.statSync(outPath)

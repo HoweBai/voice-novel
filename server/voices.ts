@@ -1,7 +1,7 @@
 import type { VoiceOption } from '../src/types/index.js'
 
 // 精选中文 Edge TTS 音色，覆盖男/女/不同年龄段与气质，用于角色分配
-export const VOICES: VoiceOption[] = [
+const EDGE_VOICES: VoiceOption[] = [
   // 旁白候选
   { shortName: 'zh-CN-YunyangNeural', name: '云扬', gender: 'male', style: '沉稳男声 · 新闻播音风' },
   { shortName: 'zh-CN-XiaoxiaoNeural', name: '晓晓', gender: 'female', style: '温暖女声 · 旁白首选' },
@@ -19,8 +19,31 @@ export const VOICES: VoiceOption[] = [
   { shortName: 'zh-CN-XiaochenNeural', name: '晓辰', gender: 'female', style: '活泼女声 · 少女' },
 ]
 
+// Kokoro TTS 中文音色（sid 为 voiceId，从 sherpa-onnx Kokoro 模型定义）
+const KOKORO_VOICES: VoiceOption[] = [
+  { shortName: '48', name: 'zf_049', gender: 'female', style: '温暖女声 · 旁白首选' },
+  { shortName: '10', name: 'zm_010', gender: 'male', style: '沉稳男声 · 叙述感' },
+  { shortName: '11', name: 'zm_011', gender: 'male', style: '青年男声 · 清朗' },
+  { shortName: '9', name: 'zm_009', gender: 'male', style: '成熟男声 · 磁性' },
+  { shortName: '12', name: 'zm_012', gender: 'male', style: '稳重男声 · 中年' },
+  { shortName: '1', name: 'zf_001', gender: 'female', style: '清甜女声 · 少女' },
+  { shortName: '2', name: 'zf_002', gender: 'female', style: '清冷女声 · 知性' },
+  { shortName: '3', name: 'zf_003', gender: 'female', style: '干练女声 · 御姐' },
+  { shortName: '4', name: 'zf_004', gender: 'female', style: '温柔女声 · 成熟' },
+  { shortName: '5', name: 'zf_005', gender: 'female', style: '活泼女声 · 少女' },
+]
+
+const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'
+
+export const VOICES: VoiceOption[] = TTS_ENGINE === 'kokoro' ? KOKORO_VOICES : EDGE_VOICES
+
 // 按性别给角色推荐默认音色
 export function defaultVoiceFor(gender: string): string {
+  if (TTS_ENGINE === 'kokoro') {
+    if (gender === 'female') return '1'
+    if (gender === 'male') return '11'
+    return '48' // neutral（旁白）默认温暖女声
+  }
   if (gender === 'female') return 'zh-CN-XiaoyiNeural'
   if (gender === 'male') return 'zh-CN-YunxiNeural'
   return 'zh-CN-XiaoxiaoNeural' // neutral（旁白）默认温暖女声
