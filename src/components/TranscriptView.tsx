@@ -62,6 +62,11 @@ export default function TranscriptView({ onSeek }: { onSeek: (id: string) => voi
                       {EMOTION_LABELS[s.emotion] || s.emotion}
                     </span>
                   )}
+                  {!s.audioUrl && (
+                    <span className="inline-block mt-1 ml-1 text-[10px] px-2 py-0.5 rounded-full bg-ink-800/40 text-ink-500">
+                      配音准备中
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

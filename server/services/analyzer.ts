@@ -7,11 +7,21 @@ const SYSTEM_PROMPT = `你是一位专业的小说文本分析师。用户会给
 1. 识别文本中出现的所有角色（包括"旁白"——即非角色对白的叙述部分）。
 2. 【重要】同一人物的不同称呼/指代必须合并为同一个角色。例如"小姑娘""她""领航员"指同一人时，只保留一个角色条目，用最常用的称呼作为 name，并在 description 中说明其他称呼。禁止把同一人物的不同叫法拆成多个角色。
 3. 把整段文本按"朗读单元"拆分成有序的片段，每个片段要么是旁白(narration)，要么是某个角色的台词(dialogue)。
-4. 台词归属：根据上下文（如"某某道：""某某说："及对话情境）判断每句对白属于哪个角色。引号内的内容是该角色的台词。
-5. 不要改写、删减原文文本，片段文本尽量保持原句。
-6. 为每段判断一个情绪标签（如 calm/excited/happy/sad/angry/serious/gentle/fearful），旁白多为 calm/serious。
-7. 旁白的 characterId 固定为 "narrator"。
-8. 【切分规则】当一句话中同时包含叙述和对白时（如"小女孩蹦蹦跳跳地飞奔过来，一边说：'你终于回来了'，一边留下激动的眼泪"），必须在引号边界处拆分为多个片段：
+4. 为每段判断一个情绪标签（如 calm/excited/happy/sad/angry/serious/gentle/fearful），旁白多为 calm/serious。
+5. 旁白的 characterId 固定为 "narrator"。
+6. 不要改写、删减原文文本，片段文本尽量保持原句。
+
+【说话人归属规则——请逐句在内部追踪"当前说话人"，这是最容易出错的环节】
+a. 引号（""''「」）内的内容一定是某角色的台词或心声，必须归属给具体角色，禁止归给 narrator。
+b. 显式提示优先：引号紧邻的"XX说/道/问/答/笑/喊/吼/低声道/冷冷道"等提示，说话人是 XX。注意提示可能在引号前（他说："……"）也可能在引号后（"……"他说）。
+c. 【连续对话】当多组引号连续出现、中间只有简短动作/神态描写时（如"……"他皱眉。"……"她摇头），说话人按话轮交替：甲说一句、乙回一句，不可连续两句归给同一人，除非有明确的动作提示表明是同一人继续说。
+d. 【问答配对】"XX问/疑惑道：'……'"之后紧跟的下一句引号，通常是被问的那个人在回答；反过来，"XX答/说道：'……'"所回应的是上一句问话的人。
+e. 【动作伴随】引号与"他/她+动作"在同一句时（"……"他猛地站起来），这个"他/她"指代前文最近的同性角色，该句引号归这个角色。
+f. 【代词与称呼】先确定本段视角人物：第一人称小说里"我"是视角主角，"我"说的话归主角；对白里出现的"你/您/师兄/前辈/队长"等是对听话人的称呼，不是说话人本人。
+g. 【心理活动】"她心想/暗道：'……'"或明显是内心独白的引号内容，归该角色，类型仍为 dialogue。
+h. 【兜底推断】没有显式提示时，综合"谁在场、谁刚被问到、话轮轮到谁、台词内容与谁的处境相符"推断；现场只有两名角色时严格按话轮交替；确实无法判断时，归给当前场景中最可能说话的角色，绝不要把对白丢给 narrator。
+
+【切分规则】当一句话中同时包含叙述和对白时（如"小女孩蹦蹦跳跳地飞奔过来，一边说：'你终于回来了'，一边留下激动的眼泪"），必须在引号边界处拆分为多个片段：
    - 引号外的叙述部分 → narration（旁白）
    - 引号内的对白部分 → dialogue（说话角色）
    - 引号外的后续叙述 → narration（旁白）
@@ -21,6 +31,19 @@ const SYSTEM_PROMPT = `你是一位专业的小说文本分析师。用户会给
    {"type":"narration","characterId":"narrator","text":"小女孩蹦蹦跳跳地飞奔过来，一边说：","emotion":"excited"}
    {"type":"dialogue","characterId":"c1","text":"你终于回来了","emotion":"happy"}
    {"type":"narration","characterId":"narrator","text":"，一边留下激动的眼泪","emotion":"sad"}
+
+【连续对话归属示例】
+输入：老张推开办公室的门，小李立刻站了起来。"张队，您可算来了。"他递上一份文件。"情况怎么样？"老张接过文件翻了翻。"不太妙，证人改口了。""什么时候的事？""昨天晚上。"老张的脸色沉了下来。
+输出（注意 c1 小李与 c2 老张话轮交替，提示语在引号后时归属"他"所指的人）：
+{"type":"narration","characterId":"narrator","text":"老张推开办公室的门，小李立刻站了起来。","emotion":"calm"}
+{"type":"dialogue","characterId":"c1","text":"张队，您可算来了。","emotion":"calm"}
+{"type":"narration","characterId":"narrator","text":"他递上一份文件。","emotion":"calm"}
+{"type":"dialogue","characterId":"c2","text":"情况怎么样？","emotion":"serious"}
+{"type":"narration","characterId":"narrator","text":"老张接过文件翻了翻。","emotion":"calm"}
+{"type":"dialogue","characterId":"c1","text":"不太妙，证人改口了。","emotion":"serious"}
+{"type":"dialogue","characterId":"c2","text":"什么时候的事？","emotion":"serious"}
+{"type":"dialogue","characterId":"c1","text":"昨天晚上。","emotion":"calm"}
+{"type":"narration","characterId":"narrator","text":"老张的脸色沉了下来。","emotion":"serious"}
 
 只返回一个 JSON 对象，格式如下，不要输出任何其它文字或解释：
 {
@@ -120,18 +143,50 @@ export interface AnalysisResult {
   segments: Segment[]
 }
 
-export async function analyzeChapter(rawText: string): Promise<AnalysisResult> {
-  const chunks = chunkText(rawText)
-  const allCharacters = new Map<string, Character>()
-  allCharacters.set('narrator', { id: 'narrator', name: '旁白', gender: 'neutral', description: '叙述者' })
+// 增量分析状态：跨多次 analyzePartial 调用保持角色 ID 稳定
+export interface AnalyzeState {
+  allCharacters: Map<string, Character>
+  nameToId: Map<string, string>
+  charIdx: number
+}
 
-  const segments: Segment[] = []
+export function initAnalyzeState(prior: Character[] = []): AnalyzeState {
+  const allCharacters = new Map<string, Character>()
   const nameToId = new Map<string, string>([['旁白', 'narrator']])
   let charIdx = 0
+  for (const c of prior) {
+    if (c.id === 'narrator' || c.name === '旁白') {
+      allCharacters.set('narrator', { id: 'narrator', name: '旁白', gender: 'neutral', description: '叙述者' })
+      continue
+    }
+    allCharacters.set(c.id, c)
+    nameToId.set(c.name, c.id)
+    const m = c.id.match(/^c(\d+)$/)
+    if (m) charIdx = Math.max(charIdx, Number(m[1]))
+  }
+  if (!allCharacters.has('narrator')) {
+    allCharacters.set('narrator', { id: 'narrator', name: '旁白', gender: 'neutral', description: '叙述者' })
+  }
+  return { allCharacters, nameToId, charIdx }
+}
+
+// 分析一段文本（可以是全书，也可以是长书中的一个部分）。
+// 传入 priorCharacters（之前部分已识别的角色）可保持角色 ID 稳定、避免角色分裂。
+// 返回：characters 为截止当前累计的全部角色；segments 仅包含本次文本的片段。
+export async function analyzePartial(
+  rawText: string,
+  priorCharacters: Character[] = [],
+): Promise<AnalysisResult> {
+  const state = initAnalyzeState(priorCharacters)
+  const { allCharacters, nameToId } = state
+  let { charIdx } = state
+
+  const chunks = chunkText(rawText)
+  const segments: Segment[] = []
 
   // 串行处理：每块分析后将角色摘要传给下一块，确保跨块角色一致
   for (let i = 0; i < chunks.length; i++) {
-    const characterContext = chunks.length > 1 ? buildCharacterContext(allCharacters, nameToId) : undefined
+    const characterContext = buildCharacterContext(allCharacters, nameToId)
     const raw = await analyzeChunk(chunks[i], i, chunks.length, characterContext)
 
     // 合并角色
@@ -170,4 +225,8 @@ export async function analyzeChapter(rawText: string): Promise<AnalysisResult> {
   }
 
   return { characters: Array.from(allCharacters.values()), segments }
+}
+
+export async function analyzeChapter(rawText: string): Promise<AnalysisResult> {
+  return analyzePartial(rawText, [])
 }

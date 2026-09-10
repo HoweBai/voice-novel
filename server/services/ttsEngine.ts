@@ -9,21 +9,90 @@ const require = createRequire(import.meta.url)
 
 const TTS_ENGINE = process.env.TTS_ENGINE || 'edge'
 
-// 情绪 → prosody 速率/音调映射
-const EMOTION_MAP: Record<string, ProsodyOptions> = {
-  calm: { rate: '+0%', pitch: '+0Hz' },
-  excited: { rate: '+15%', pitch: '+8Hz' },
-  happy: { rate: '+10%', pitch: '+5Hz' },
-  sad: { rate: '-12%', pitch: '-6Hz' },
-  angry: { rate: '+18%', pitch: '+12Hz' },
-  serious: { rate: '-5%', pitch: '-2Hz' },
-  gentle: { rate: '-5%', pitch: '+0Hz' },
-  fearful: { rate: '+8%', pitch: '+10Hz' },
+// 情绪 → 速率变化(小数)/音调(Hz) 映射（Edge TTS 用）
+const EMOTION_MAP: Record<string, { rate: number; pitch: number }> = {
+  calm: { rate: 0, pitch: 0 },
+  excited: { rate: 0.15, pitch: 8 },
+  happy: { rate: 0.1, pitch: 5 },
+  sad: { rate: -0.12, pitch: -6 },
+  angry: { rate: 0.18, pitch: 12 },
+  serious: { rate: -0.05, pitch: -2 },
+  gentle: { rate: -0.05, pitch: 0 },
+  fearful: { rate: 0.08, pitch: 10 },
 }
 
-function prosodyFor(emotion?: string): ProsodyOptions {
-  if (!emotion) return {}
-  return EMOTION_MAP[emotion] || {}
+// 合成级全局语速系数（用户选择），与情绪语速叠加；clamp 到 TTS 可接受范围
+function clampFactor(v: number): number {
+  return Math.min(2, Math.max(0.5, v || 1))
+}
+
+// 写 16-bit 单声道 PCM WAV（sherpa-onnx 系引擎通用）
+function writeWavPcm(outPath: string, samples: Float32Array, sampleRate: number): void {
+  const buffer = Buffer.alloc(44 + samples.length * 2)
+  buffer.write('RIFF', 0)
+  buffer.writeUInt32LE(36 + samples.length * 2, 4)
+  buffer.write('WAVE', 8)
+  buffer.write('fmt ', 12)
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(sampleRate * 2, 28)
+  buffer.writeUInt16LE(2, 32)
+  buffer.writeUInt16LE(16, 34)
+  buffer.write('data', 36)
+  buffer.writeUInt32LE(samples.length * 2, 40)
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    buffer.writeInt16LE(Math.round(s * 32767), 44 + i * 2)
+  }
+  fs.writeFileSync(outPath, buffer)
+}
+
+// 读取 WAV 文件为单声道 Float32Array（按 chunk 扫描解析，兼容 ffmpeg 带 fact/LIST 等额外块的头部）
+function readWavMono(filePath: string): { samples: Float32Array; sampleRate: number } {
+  const b = fs.readFileSync(filePath)
+  if (b.toString('ascii', 0, 4) !== 'RIFF' || b.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error(`不是合法的 WAV 文件: ${filePath}`)
+  }
+  let offset = 12
+  let sampleRate = 0
+  let channels = 1
+  let dataOffset = -1
+  let dataLen = 0
+  while (offset + 8 <= b.length) {
+    const id = b.toString('ascii', offset, offset + 4)
+    const size = b.readUInt32LE(offset + 4)
+    const body = offset + 8
+    if (id === 'fmt ') {
+      channels = b.readUInt16LE(body + 2)
+      sampleRate = b.readUInt32LE(body + 4)
+    } else if (id === 'data') {
+      dataOffset = body
+      dataLen = size
+      break
+    }
+    offset = body + size + (size % 2) // chunk 按偶数字节对齐
+  }
+  if (dataOffset < 0 || sampleRate === 0) {
+    throw new Error(`WAV 缺少 data/fmt 块: ${filePath}`)
+  }
+  const n = Math.floor(Math.min(dataLen, b.length - dataOffset) / 2 / channels)
+  const samples = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    samples[i] = b.readInt16LE(dataOffset + i * channels * 2) / 32768
+  }
+  return { samples, sampleRate }
+}
+
+function prosodyFor(emotion?: string, speedFactor = 1): ProsodyOptions {
+  const f = clampFactor(speedFactor)
+  const e = (emotion && EMOTION_MAP[emotion]) || EMOTION_MAP.calm
+  const rate = (1 + e.rate) * f - 1
+  return {
+    rate: `${rate >= 0 ? '+' : ''}${Math.round(rate * 100)}%`,
+    pitch: `${e.pitch >= 0 ? '+' : ''}${e.pitch}Hz`,
+  }
 }
 
 // 若配置了代理，则通过 https-proxy-agent 走代理（用于直连 Microsoft 服务受限的网络环境）
@@ -42,12 +111,13 @@ async function synthesizeWithTts(
   voiceShortName: string,
   outPath: string,
   emotion?: string,
+  speedFactor = 1,
 ): Promise<void> {
   let lastErr: unknown
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
       await tts.setMetadata(voiceShortName, OUTPUT_FORMAT.AUDIO_24KHZ_96KBITRATE_MONO_MP3, {})
-      const { audioStream } = tts.toStream(text, prosodyFor(emotion))
+      const { audioStream } = tts.toStream(text, prosodyFor(emotion, speedFactor))
       await new Promise<void>((resolve, reject) => {
         const ws = fs.createWriteStream(outPath)
         audioStream.pipe(ws)
@@ -78,9 +148,10 @@ export async function synthesizeSegment(
   text: string,
   voiceShortName: string,
   emotion?: string,
+  speedFactor?: number,
 ): Promise<string> {
   const out = audioPath(bookId, segmentId)
-  await synthesize(text, voiceShortName, out, emotion)
+  await synthesize(text, voiceShortName, out, emotion, speedFactor)
   return out
 }
 
@@ -126,37 +197,117 @@ async function synthesizeWithKokoro(
   voiceId: number,
   outPath: string,
   emotion?: string,
+  speedFactor = 1,
 ): Promise<void> {
   const tts = await getKokoroTts()
-  const speed = KOKORO_SPEED[emotion || 'calm'] || 1.0
+  // 情绪语速 × 用户全局语速系数
+  const speed = clampFactor((KOKORO_SPEED[emotion || 'calm'] || 1.0) * speedFactor)
   // 使用 generateAsync 避免同步 generate 阻塞 Node.js 事件循环
   const audio = await tts.generateAsync({
     text,
     generationConfig: { sid: voiceId, speed, silenceScale: 0.2 },
   })
-  // sherpa-onnx 输出 WAV，直接写入文件
-  const samples = audio.samples as Float32Array
-  const sampleRate = audio.sampleRate as number
-  // 写 WAV 文件
-  const buffer = Buffer.alloc(44 + samples.length * 2)
-  buffer.write('RIFF', 0)
-  buffer.writeUInt32LE(36 + samples.length * 2, 4)
-  buffer.write('WAVE', 8)
-  buffer.write('fmt ', 12)
-  buffer.writeUInt32LE(16, 16)
-  buffer.writeUInt16LE(1, 20)
-  buffer.writeUInt16LE(1, 22)
-  buffer.writeUInt32LE(sampleRate, 24)
-  buffer.writeUInt32LE(sampleRate * 2, 28)
-  buffer.writeUInt16LE(2, 32)
-  buffer.writeUInt16LE(16, 34)
-  buffer.write('data', 36)
-  buffer.writeUInt32LE(samples.length * 2, 40)
-  for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]))
-    buffer.writeInt16LE(Math.round(s * 32767), 44 + i * 2)
+  writeWavPcm(outPath, audio.samples as Float32Array, audio.sampleRate as number)
+}
+
+// ---- ZipVoice 引擎（sherpa-onnx 零样本声音克隆，需参考音频） ----
+
+let zipvoiceTts: any = null
+interface ZipvoiceProfile {
+  id: string
+  gender: string
+  name: string
+  style: string
+  refWav: string
+  refText: string
+}
+let zipvoiceProfiles: Map<string, ZipvoiceProfile> | null = null
+// 参考音频解码结果缓存（每个音色只读盘一次）
+const refAudioCache = new Map<string, { samples: Float32Array; sampleRate: number }>()
+
+function getZipvoiceProfiles(): Map<string, ZipvoiceProfile> {
+  if (zipvoiceProfiles) return zipvoiceProfiles
+  const dir = process.env.ZIPVOICE_VOICES_DIR || './models/zipvoice-voices'
+  const file = path.join(dir, 'profiles.json')
+  const list = JSON.parse(fs.readFileSync(file, 'utf-8')) as ZipvoiceProfile[]
+  zipvoiceProfiles = new Map(list.map((p) => [p.id, p]))
+  console.log(`[zipvoice] 已加载 ${zipvoiceProfiles.size} 个参考音色档案 (${dir})`)
+  return zipvoiceProfiles
+}
+
+async function getZipvoiceTts(): Promise<any> {
+  if (zipvoiceTts) return zipvoiceTts
+  const modelPath = process.env.ZIPVOICE_MODEL_PATH || './models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia'
+  console.log('[zipvoice] 开始加载模型...')
+  const t0 = Date.now()
+  const sherpa = require('sherpa-onnx-node')
+  const config = {
+    model: {
+      zipvoice: {
+        tokens: path.join(modelPath, 'tokens.txt'),
+        encoder: path.join(modelPath, 'encoder.int8.onnx'),
+        decoder: path.join(modelPath, 'decoder.int8.onnx'),
+        // 模型包不含 vocoder，需单独下载 vocos_24khz.onnx
+        vocoder: path.join(modelPath, 'vocos_24khz.onnx'),
+        dataDir: path.join(modelPath, 'espeak-ng-data'),
+        lexicon: path.join(modelPath, 'lexicon.txt'),
+      },
+    },
+    debug: false,
+    numThreads: parseInt(process.env.ZIPVOICE_THREADS || '8', 10),
+    provider: 'cpu',
   }
-  fs.writeFileSync(outPath, buffer)
+  zipvoiceTts = await sherpa.OfflineTts.createAsync(config)
+  console.log(`[zipvoice] 模型加载完成 (${((Date.now() - t0) / 1000).toFixed(1)}s)`)
+  return zipvoiceTts
+}
+
+// 取某音色的参考音频（24k 单声道 float32），带缓存
+function getReferenceAudio(profile: ZipvoiceProfile): { samples: Float32Array; sampleRate: number } {
+  const cached = refAudioCache.get(profile.id)
+  if (cached) return cached
+  const dir = process.env.ZIPVOICE_VOICES_DIR || './models/zipvoice-voices'
+  const ref = readWavMono(path.join(dir, profile.refWav))
+  refAudioCache.set(profile.id, ref)
+  return ref
+}
+
+// ZipVoice 情绪 → 语速映射（克隆模型无音调参数，仅语速可调）
+const ZIPVOICE_SPEED: Record<string, number> = {
+  calm: 1.0, excited: 1.15, happy: 1.1, sad: 0.88,
+  angry: 1.2, serious: 0.95, gentle: 0.92, fearful: 1.08,
+}
+
+async function synthesizeWithZipvoice(
+  text: string,
+  voiceKey: string,
+  outPath: string,
+  emotion?: string,
+  speedFactor = 1,
+): Promise<void> {
+  const tts = await getZipvoiceTts()
+  const profile = getZipvoiceProfiles().get(voiceKey)
+  if (!profile) {
+    throw new Error(`ZipVoice 找不到音色档案: ${voiceKey}（检查 ${process.env.ZIPVOICE_VOICES_DIR || './models/zipvoice-voices'}/profiles.json）`)
+  }
+  const { samples: referenceAudio, sampleRate: referenceSampleRate } = getReferenceAudio(profile)
+  // ZipVoice 的 speed 参数实际作用偏激进（1.25 会快约 2.7 倍），
+  // 因此把情绪/用户语速的偏移量衰减一半后再夹紧到 [0.85, 1.15] 的安全区间
+  const rawSpeed = (ZIPVOICE_SPEED[emotion || 'calm'] || 1.0) * clampFactor(speedFactor)
+  const speed = Math.min(1.15, Math.max(0.85, 1 + (rawSpeed - 1) * 0.5))
+  const numSteps = parseInt(process.env.ZIPVOICE_NUM_STEPS || '4', 10)
+  // 零样本克隆：参考音频 + 参考文本必须精确对应
+  const audio = await tts.generateAsync({
+    text,
+    generationConfig: {
+      speed,
+      numSteps,
+      referenceAudio,
+      referenceSampleRate,
+      referenceText: profile.refText,
+    },
+  })
+  writeWavPcm(outPath, audio.samples as Float32Array, audio.sampleRate as number)
 }
 
 // 统一合成入口：按配置选择引擎
@@ -165,20 +316,38 @@ export async function synthesize(
   voiceShortName: string,
   outPath: string,
   emotion?: string,
+  speedFactor?: number,
 ): Promise<void> {
   if (TTS_ENGINE === 'kokoro') {
     // Kokoro 用数字 voiceId，从 voiceShortName 解析
     const voiceId = parseInt(voiceShortName, 10) || 48
-    await synthesizeWithKokoro(text, voiceId, outPath, emotion)
+    await synthesizeWithKokoro(text, voiceId, outPath, emotion, speedFactor)
+    return
+  }
+  if (TTS_ENGINE === 'zipvoice') {
+    // ZipVoice 用参考音色档案 id（如 zv-yunxi）
+    await synthesizeWithZipvoice(text, voiceShortName, outPath, emotion, speedFactor)
     return
   }
   // Edge TTS
   const tts = new MsEdgeTTS(makeAgent())
   try {
-    await synthesizeWithTts(tts, text, voiceShortName, outPath, emotion)
+    await synthesizeWithTts(tts, text, voiceShortName, outPath, emotion, speedFactor)
   } finally {
     tts.close()
   }
+}
+
+// 根据文件大小估算时长（秒）
+// 本地 sherpa-onnx 引擎 WAV: 24kHz 16-bit mono = 48000 bytes/s（减去 44 字节文件头）
+// Edge MP3: 96kbit/s = 12000 bytes/s
+function estimateDuration(filePath: string): number {
+  const stat = fs.statSync(filePath)
+  if (TTS_ENGINE === 'kokoro' || TTS_ENGINE === 'zipvoice') {
+    const dataBytes = Math.max(0, stat.size - 44)
+    return Math.ceil(dataBytes / 48000)
+  }
+  return Math.ceil(stat.size / 12000)
 }
 
 // 批量合成
@@ -187,23 +356,33 @@ export async function synthesizeBatch(
   items: { segmentId: string; text: string; voice: string; emotion?: string }[],
   onProgress?: (index: number, segmentId: string, audioUrl: string, durationSec: number) => void,
   onError?: (index: number, segmentId: string, message: string) => void,
+  speedFactor?: number,
 ): Promise<void> {
-  if (TTS_ENGINE === 'kokoro') {
-    // Kokoro 批量合成：每段之间让出事件循环，避免长时间阻塞其它请求
+  if (TTS_ENGINE === 'kokoro' || TTS_ENGINE === 'zipvoice') {
+    // 本地 sherpa-onnx 引擎批量合成：每段之间让出事件循环，避免长时间阻塞其它请求
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
       const outPath = audioPath(bookId, item.segmentId)
       const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 0
       if (exists) {
-        const stat = fs.statSync(outPath)
-        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), Math.ceil(stat.size / 4000))
+        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), estimateDuration(outPath))
         continue
       }
       try {
-        const voiceId = parseInt(item.voice, 10) || 48
-        await synthesizeWithKokoro(item.text, voiceId, outPath, item.emotion)
-        const stat = fs.statSync(outPath)
-        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), Math.ceil(stat.size / 4000))
+        // 原生推理偶发瞬时错误，重试 2 次
+        let lastErr: any
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            await synthesize(item.text, item.voice, outPath, item.emotion, speedFactor)
+            lastErr = null
+            break
+          } catch (e) {
+            lastErr = e
+            await new Promise((r) => setTimeout(r, 300 * (attempt + 1)))
+          }
+        }
+        if (lastErr) throw lastErr
+        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), estimateDuration(outPath))
       } catch (e: any) {
         onError?.(i, item.segmentId, e?.message || 'TTS 失败')
       }
@@ -220,14 +399,12 @@ export async function synthesizeBatch(
       const outPath = audioPath(bookId, item.segmentId)
       const exists = fs.existsSync(outPath) && fs.statSync(outPath).size > 0
       if (exists) {
-        const stat = fs.statSync(outPath)
-        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), Math.ceil(stat.size / 4000))
+        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), estimateDuration(outPath))
         continue
       }
       try {
-        await synthesizeWithTts(tts, item.text, item.voice, outPath, item.emotion)
-        const stat = fs.statSync(outPath)
-        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), Math.ceil(stat.size / 4000))
+        await synthesizeWithTts(tts, item.text, item.voice, outPath, item.emotion, speedFactor)
+        onProgress?.(i, item.segmentId, audioRelUrl(bookId, item.segmentId), estimateDuration(outPath))
       } catch (e: any) {
         onError?.(i, item.segmentId, e?.message || 'TTS 失败')
       }

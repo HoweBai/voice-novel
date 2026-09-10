@@ -3,8 +3,15 @@ import { useAppStore, useActiveChapter, useCharacters } from '../store/appStore'
 import { useApi } from '../hooks/useApi'
 import { VOICES as FALLBACK_VOICES, colorForCharacter } from '../lib/constants'
 
+const SPEED_OPTIONS = [
+  { value: 0.9, label: '慢速' },
+  { value: 1.0, label: '标准' },
+  { value: 1.12, label: '稍快' },
+  { value: 1.25, label: '快速' },
+]
+
 export default function CharacterPanel() {
-  const { book, error } = useAppStore()
+  const { book, error, speedFactor, setSpeedFactor } = useAppStore()
   const characters = useCharacters()
   const chapter = useActiveChapter()
   const storeVoices = useAppStore((s) => s.voices)
@@ -20,7 +27,8 @@ export default function CharacterPanel() {
   const handlePreview = async (voiceId: string, name: string) => {
     setPreviewing(voiceId)
     try {
-      const url = `/api/tts/preview?text=${encodeURIComponent(`这是${name}的声音，听起来是这样的。`)}&voice=${voiceId}`
+      const text = `这是${name}的声音，听起来是这样的。`
+      const url = `/api/tts/preview?text=${encodeURIComponent(text)}&voice=${voiceId}&speed=${speedFactor}`
       const audio = new Audio(url)
       await audio.play()
       audio.onended = () => setPreviewing(null)
@@ -39,7 +47,9 @@ export default function CharacterPanel() {
       setError('请至少为角色分配音色')
       return
     }
-    await apiGenerate(book.id, chapter, assignments)
+    // 已在后台配好音的片段不重复生成
+    const missing = chapter.segments.filter((s) => !s.audioUrl)
+    await apiGenerate(book.id, { ...chapter, segments: missing }, assignments, speedFactor)
   }
 
   return (
@@ -108,13 +118,44 @@ export default function CharacterPanel() {
           ))}
         </div>
 
+        {/* 语速选择：与情绪语速叠加（激动处更快、悲伤处更慢） */}
+        <div className="mt-6 glass rounded-xl p-4 flex items-center gap-4 fade-in">
+          <span className="text-ink-300 text-sm font-display whitespace-nowrap">整体语速</span>
+          <div className="flex items-center gap-1">
+            {SPEED_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => setSpeedFactor(opt.value)}
+                className={`px-3 py-1.5 rounded-lg text-sm transition ${
+                  speedFactor === opt.value
+                    ? 'bg-ember-500/20 text-ember-300 border border-ember-500/40'
+                    : 'text-ink-400 border border-ink-700 hover:text-ink-200'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-ink-500 text-xs">
+            配音时会随情境自动变化：激动加快、悲伤放缓
+          </span>
+        </div>
+
         <div className="mt-8 flex items-center justify-between fade-in">
           <p className="text-ink-400 text-sm">
-            共 {characters.length} 个角色 · {chapter.segments.length} 个朗读片段
+            {chapter.segments.length === 0 ? (
+              <>该章节正在后台理解中，请稍候片刻…</>
+            ) : (
+              <>
+                共 {characters.length} 个角色 · {chapter.segments.length} 个朗读片段
+                <span className="ml-2 text-ink-500 text-xs">（先配开头部分，后续将在您收听时后台自动完成）</span>
+              </>
+            )}
           </p>
           <button
             onClick={handleStart}
-            className="px-8 py-3 rounded-xl bg-gradient-to-r from-ember-500 to-gold-400 text-ink-950 font-display font-semibold hover:shadow-glow transition-all"
+            disabled={chapter.segments.length === 0}
+            className="px-8 py-3 rounded-xl bg-gradient-to-r from-ember-500 to-gold-400 text-ink-950 font-display font-semibold hover:shadow-glow transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           >
             开始配音
           </button>

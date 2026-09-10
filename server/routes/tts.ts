@@ -8,15 +8,16 @@ interface GenerateBody {
   bookId: string
   segments: Segment[]
   assignments: Record<string, string> // characterId -> voiceShortName
+  speedFactor?: number // 全局语速系数（用户选择，与情绪语速叠加）
 }
 
 // 批量生成锁：防止多个 generate 请求并发执行导致 CPU 饱和
 let generateLock = false
 
 // POST /api/tts/generate
-// 接收 { bookId, segments, assignments }，逐段生成音频，通过 SSE 推送进度
+// 接收 { bookId, segments, assignments, speedFactor? }，逐段生成音频，通过 SSE 推送进度
 router.post('/generate', async (req, res) => {
-  const { bookId, segments, assignments } = req.body as GenerateBody
+  const { bookId, segments, assignments, speedFactor } = req.body as GenerateBody
   if (!bookId || !segments || !assignments) {
     return res.status(400).json({ error: '缺少必要参数 bookId/segments/assignments' })
   }
@@ -57,6 +58,7 @@ router.post('/generate', async (req, res) => {
           send({ type: 'error', segmentId, index, message })
         }
       },
+      speedFactor,
     )
     send({ type: 'done', total })
   } catch (err: any) {
@@ -67,15 +69,17 @@ router.post('/generate', async (req, res) => {
   }
 })
 
-// 试听单段：GET /api/tts/preview?text=...&voice=...
+// 试听单段：GET /api/tts/preview?text=...&voice=...&emotion=...&speed=...
 router.get('/preview', async (req, res) => {
   try {
     const text = String(req.query.text || '')
     const voice = String(req.query.voice || 'zh-CN-XiaoxiaoNeural')
+    const emotion = req.query.emotion ? String(req.query.emotion) : 'calm'
+    const speed = req.query.speed ? Number(req.query.speed) : undefined
     if (!text) return res.status(400).json({ error: '缺少 text' })
     const bookId = '_preview'
     const segId = `pv-${Date.now().toString(36)}`
-    const outPath = await synthesizeSegment(bookId, segId, text, voice, 'calm')
+    const outPath = await synthesizeSegment(bookId, segId, text, voice, emotion, speed)
     res.sendFile(outPath)
   } catch (err: any) {
     res.status(500).json({ error: err?.message || '试听失败' })

@@ -81,16 +81,40 @@ export function useAudioPlayer() {
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
+    let waitTimer: ReturnType<typeof setInterval> | null = null
     const onEnded = () => {
-      const cur = useAppStore.getState().currentSegmentId
-      const segs = useAppStore.getState().book?.chapters.find((c) => c.id === useAppStore.getState().activeChapterId)?.segments ?? []
-      const rdy = segs.filter((s) => s.audioUrl)
-      const idx = rdy.findIndex((s) => s.id === cur)
-      if (idx >= 0 && idx + 1 < rdy.length) {
-        playIndex(idx + 1)
-      } else {
-        setIsPlaying(false)
+      const chapterIdAtEnd = useAppStore.getState().activeChapterId
+      const tryAdvance = (): boolean => {
+        const st = useAppStore.getState()
+        // 已切换章节则不再续播
+        if (st.activeChapterId !== chapterIdAtEnd) return true
+        const segs = st.book?.chapters.find((c) => c.id === chapterIdAtEnd)?.segments ?? []
+        const rdy = segs.filter((s) => s.audioUrl)
+        const idx = rdy.findIndex((s) => s.id === st.currentSegmentId)
+        if (idx >= 0 && idx + 1 < rdy.length) {
+          playIndex(idx + 1)
+          return true
+        }
+        return false
       }
+      if (tryAdvance()) return
+      // 已听完当前已配音部分，后台仍在准备后续片段：轮询等待并自动续播
+      let tries = 0
+      waitTimer = setInterval(() => {
+        tries++
+        const st = useAppStore.getState()
+        if (tryAdvance()) {
+          if (waitTimer) clearInterval(waitTimer)
+          waitTimer = null
+          return
+        }
+        // 后台全部完成仍无后续，或超时（20 分钟），则停止
+        if (st.backgroundDone || tries > 600 || st.activeChapterId !== chapterIdAtEnd) {
+          if (waitTimer) clearInterval(waitTimer)
+          waitTimer = null
+          setIsPlaying(false)
+        }
+      }, 2000)
     }
     const onPlay = () => setIsPlaying(true)
     const onPause = () => setIsPlaying(false)
@@ -101,6 +125,7 @@ export function useAudioPlayer() {
       audio.removeEventListener('ended', onEnded)
       audio.removeEventListener('play', onPlay)
       audio.removeEventListener('pause', onPause)
+      if (waitTimer) clearInterval(waitTimer)
     }
   }, [playIndex, setIsPlaying])
 
