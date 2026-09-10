@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#0b0f14"/>
+  <circle cx="32" cy="32" r="22" fill="none" stroke="#e8943a" stroke-width="2" opacity="0.4"/>
+  <g fill="#e8943a">
+    <rect x="20" y="28" width="4" height="12" rx="2">
+      <animate attributeName="height" values="6;16;6" dur="1.2s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="31;24;31" dur="1.2s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="30" y="24" width="4" height="20" rx="2">
+      <animate attributeName="height" values="10;26;10" dur="1.2s" begin="0.2s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="29;19;29" dur="1.2s" begin="0.2s" repeatCount="indefinite"/>
+    </rect>
+    <rect x="40" y="30" width="4" height="8" rx="2">
+      <animate attributeName="height" values="6;14;6" dur="1.2s" begin="0.4s" repeatCount="indefinite"/>
+      <animate attributeName="y" values="31;25;31" dur="1.2s" begin="0.4s" repeatCount="indefinite"/>
+    </rect>
+  </g>
+</svg>
