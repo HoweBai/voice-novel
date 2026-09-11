@@ -1,129 +1,158 @@
-# voice-novel — 有声小说阅读器
+# voice-novel — 有声小说阅读器 / Audiobook Reader
 
-本地运行的有声小说播放器：上传 EPUB/TXT/DOCX → AI 分析角色对话 → 多 TTS 引擎配音 → 按章节播放。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+[![React](https://img.shields.io/badge/React-18-61dafb.svg)](https://reactjs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)](https://typescriptlang.org)
 
-## 技术栈
+简体中文 | [English](#english)
 
-- **前端**：React 18 + Vite 6 + TypeScript + TailwindCSS + Zustand
-- **后端**：Node.js 18+ + Express + tsx（热重载）
-- **TTS 引擎**（`.env` 中 `TTS_ENGINE` 切换）：
-  - `edge`：Edge 在线 TTS（无需本地模型，需联网）
-  - `kokoro`：本地 sherpa-onnx Kokoro（CPU，中英）
-  - `zipvoice`：本地 sherpa-onnx ZipVoice 零样本声音克隆
-  - `chattts`：本地 Python FastAPI 微服务 + PyTorch CUDA
+本地运行的有声小说播放器。上传 EPUB/TXT/DOCX → AI 自动分析角色与对话 → 多 TTS 引擎配音 → 按章节流式播放。支持 Edge 云端、sherpa-onnx（Kokoro / ZipVoice 零样本克隆）、ChatTTS（PyTorch + CUDA）等多种引擎，可通过 `.env` 一键切换。
 
-## 快速开始
+---
 
-### 前置要求
+# voice-novel — Audiobook Reader
 
-- Node.js ≥ 18（npm ≥ 9）
-- Python 3.10+（使用 ChatTTS 时需要）
-- Git
+Local audiobook player. Upload EPUB/TXT/DOCX → AI analyzes characters and dialogue → multi-engine TTS synthesis → chapter-by-chapter streaming playback. Supports Edge Cloud, sherpa-onnx (Kokoro / ZipVoice zero-shot cloning), ChatTTS (PyTorch + CUDA) and more — switch engines via `.env`.
 
-### 安装
+---
+
+## Features / 功能
+
+- **多格式导入** — 支持 EPUB / TXT / DOCX，自动提取章节
+- **AI 角色分析** — 调用 OpenAI 兼容接口，自动提取角色、旁白与对话分段
+- **多引擎配音** — Edge / Kokoro / ZipVoice / ChatTTS 四种引擎，音色可切换
+- **音色分配** — 为每个角色单独指定音色，支持男女声混合
+- **情绪与语速** — 细粒度控制情绪（愤怒/悲伤/欢快等）和语速系数
+- **单段试听 + 批量生成** — SSE 实时进度推送，浏览器内连续播放
+- **进度记忆** — 浏览器本地记录播放位置，续读无缝衔接
+
+---
+
+## Tech Stack / 技术栈
+
+| Layer / 层级 | Stack / 技术栈 |
+|---|---|
+| Frontend / 前端 | React 18 · Vite 6 · TypeScript · TailwindCSS · Zustand |
+| Backend / 后端 | Node.js 18+ · Express · tsx (hot reload) |
+| AI Client / AI 调用 | OpenAI-compatible chat completions |
+| TTS Engines / TTS 引擎 | Edge TTS · sherpa-onnx (Kokoro/ZipVoice) · ChatTTS (FastAPI + PyTorch CUDA) |
+
+---
+
+## Quick Start / 快速开始
+
+### Prerequisites / 前置要求
+
+- **Node.js** ≥ 18 · **npm** ≥ 9
+- **Python** ≥ 3.10 （可选：仅使用 ChatTTS 引擎时需要）
+- **Git**
+- GPU 推理（可选）：NVIDIA 显卡 + CUDA 12.x（ChatTTS 最佳体验）
+
+### Installation / 安装
 
 ```bash
+git clone https://github.com/HoweBai/voice-novel.git
+cd voice-novel
 npm install
 ```
 
-### 配置
-
-复制环境变量模板并填写你的 API 密钥：
+### Configuration / 配置
 
 ```bash
-copy .env.example .env
-# 编辑 .env：填入 OPENAI_API_KEY、选择 TTS_ENGINE 等
+# 复制环境变量模板（Windows / macOS / Linux 通用）
+cp .env.example .env
+
+# 编辑 .env，填入你的 API 密钥
+# Edit .env and fill in your API keys
 ```
 
-**.env 关键配置说明**：
+**关键配置项 / Key variables**:
 
-| 变量 | 说明 |
+| 变量 / Variable | 说明 / Description |
 |---|---|
-| `OPENAI_API_KEY` | AI 角色分析接口密钥（必需，OpenAI 兼容格式） |
-| `TTS_ENGINE` | `edge` / `kokoro` / `zipvoice` / `chattts` |
-| `HTTPS_PROXY` | Edge TTS / HF 下载需代理时配置，如 `http://127.0.0.1:7890` |
+| `OPENAI_API_KEY` | AI 角色分析接口密钥（必填，OpenAI 兼容格式）/ Required API key for AI character analysis (OpenAI-compatible) |
+| `OPENAI_API_BASE` | 第三方 API 端点，如 `https://apihub.agnes-ai.com/v1` / Third-party API endpoint |
+| `OPENAI_MODEL` | 模型名，默认 `agnes-2.5-flash` / Model name |
+| `TTS_ENGINE` | 选 `edge` / `kokoro` / `zipvoice` / `chattts` / Select TTS engine |
+| `HTTPS_PROXY` | 代理地址（Edge/HF 需联网时配置）/ Proxy for Edge/HF internet access |
 
-**ChatTTS 引擎额外步骤**（可选）：
-
-```bash
-# 初始化 ChatTTS Python 虚拟环境（首次）
-py -3.11 -m venv .venv-chattts
-.\.venv-chattts\Scripts\Activate.ps1
-pip install -r chattts-service/requirements.txt
-
-# 启动 ChatTTS 微服务（需另开终端）
-npm run chattts
-```
-
-模型首次启动会从 HuggingFace 自动下载到 `models/hf-cache/`，请确保有网络（或配置 `HTTPS_PROXY`）。
-
-### 启动开发服务器
-
-同时启动后端（8787）和前端（5173）：
+### Start Development Server / 启动开发服务器
 
 ```bash
+# 同时启动后端 (8787) 和前端 (5173) / Start both backend (8787) and frontend (5173)
 npm run dev
-```
 
-仅启动后端：
-
-```bash
+# 仅后端 / Backend only
 npm run dev:server
-```
 
-仅启动前端：
-
-```bash
+# 仅前端 / Frontend only
 npm run dev:web
 ```
 
-访问 http://localhost:5173
+浏览器访问 **http://localhost:5173** 即可开始使用。
 
-### 生产部署
+### ChatTTS 引擎额外步骤（可选）/ ChatTTS extra steps (optional)
 
 ```bash
-npm run build       # 构建前端
-npm start           # 启动后端（NODE_ENV=production）
+# 1. 初始化 Python 虚拟环境 / Init Python venv
+py -3.11 -m venv .venv-chattts
+
+# 2. 激活 venv / Activate venv (Windows PowerShell)
+.\.venv-chattts\Scripts\Activate.ps1
+# macOS / Linux: source .venv-chattts/bin/activate
+
+# 3. 安装依赖 / Install dependencies
+pip install -r chattts-service/requirements.txt
+
+# 4. 另开终端启动 ChatTTS 微服务 / Start ChatTTS service in another terminal
+npm run chattts
 ```
 
-## 功能说明
+首次启动会从 HuggingFace 自动下载模型到 `models/hf-cache/`，请确保网络畅通（或配置 `HTTPS_PROXY`）。
 
-1. **上传小说**：支持 EPUB / TXT / DOCX
-2. **AI 分析**：提取角色、情绪、旁白与对话分段
-3. **音色分配**：为每个角色分配音色（支持多引擎）
-4. **试听 / 批量生成**：单段预览，SSE 进度推送批量合成
-5. **播放器**：分段播放，记忆进度
+---
 
-## TTS 引擎对比
+## TTS Engine Comparison / TTS 引擎对比
 
-| 引擎 | 音质 | 速度 | 依赖 | 中文对话感 |
+| 引擎 / Engine | 音质 / Quality | 速度 / Speed | 依赖 / Dependency | 中文对话感 / Dialogue Feel |
 |---|---|---|---|---|
-| edge | ⭐⭐⭐ | 快（云端） | 无需本地模型 | ⭐⭐ |
-| kokoro | ⭐⭐ | 中（CPU） | sherpa-onnx 模型 | ⭐⭐⭐ |
-| zipvoice | ⭐⭐⭐ | 中（CPU） | sherpa-onnx + vocos | ⭐⭐⭐⭐ |
-| chattts | ⭐⭐⭐⭐ | 较慢（CUDA） | Python + PyTorch + CUDA | ⭐⭐⭐⭐⭐ |
+| **edge** | ⭐⭐⭐ | ⚡ 快 / Fast (云端) | 无需本地模型 / No local model | ⭐⭐ |
+| **kokoro** | ⭐⭐ | 🖥️ 中 / Medium (CPU) | sherpa-onnx 模型 / Local model | ⭐⭐⭐ |
+| **zipvoice** | ⭐⭐⭐ | 🖥️ 中 / Medium (CPU) | sherpa-onnx + vocos | ⭐⭐⭐⭐ |
+| **chattts** | ⭐⭐⭐⭐ | 🐢 较慢 / Slower (CUDA) | Python + PyTorch + CUDA | ⭐⭐⭐⭐⭐ |
 
-> RTX 2080 实测 ChatTTS RTF ≈ 1.7（1 秒音频约 1.7 秒合成）；CPU 机器建议选择 zipvoice 或 edge。
+> **性能参考 / Performance notes**: RTX 2080 实测 ChatTTS RTF ≈ 1.7（1 秒音频约 1.7 秒合成）。CPU 机器建议选择 zipvoice 或 edge。
 
-## 目录结构
+---
+
+## Project Structure / 目录结构
 
 ```
-├── src/            # 前端 React 源码
-├── server/         # Node 后端（Express + tsx）
-│   ├── routes/     # API 路由
-│   └── services/   # 业务逻辑（TTS / AI / 文档解析）
-├── chattts-service/ # ChatTTS Python 微服务（FastAPI）
-├── storage/        # 运行时音频缓存（已 .gitignore）
-├── models/         # TTS 模型文件（已 .gitignore）
-├── res/            # 测试资源（上传示例文件）
-└── .env.example    # 环境变量模板
+voice-novel/
+├── src/                  # 前端 React 源码 / Frontend React source
+├── server/               # Node 后端 / Backend
+│   ├── routes/           # API 路由 / API routes
+│   └── services/         # 业务逻辑（TTS / AI / 文档解析）/ Business logic
+├── chattts-service/      # ChatTTS Python 微服务 / Python microservice
+├── storage/              # 运行时音频缓存（已 .gitignore）/ Runtime audio cache
+├── models/               # TTS 模型文件（已 .gitignore）/ TTS model files
+├── res/                  # 测试资源 / Test resources
+├── .env.example          # 环境变量模板 / Environment template
+└── README.md             # 本文件 / This file
 ```
 
-## 项目分支说明
+---
 
-- `master`：当前稳定版（ZipVoice / Kokoro / Edge 混编）
-- `feat/chattts`：ChatTTS 引擎分支（PyTorch + CUDA，需独立 Python 微服务）
+## Branches / 分支说明
 
-## License
+- **`master`** — 稳定版（Edge / Kokoro / ZipVoice）/ Stable branch
+- **`feat/chattts`** — ChatTTS 引擎开发分支（PyTorch + CUDA，需独立 Python 微服务）/ ChatTTS development branch
 
-Private / Personal Use
+---
+
+## License / 许可
+
+本项目采用 **MIT License** 开源协议。详见 [LICENSE](LICENSE)。
+This project is open-sourced under the **MIT License**. See [LICENSE](LICENSE) for details.
