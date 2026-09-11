@@ -7,3 +7,16 @@ models
 *.log
 *.tsbuildinfo
 .trae
+.venv-chattts
+__pycache__
+
+# 二进制大文件不入库
+*.exe
+*.dll
+*.son
+*.onnx
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.egg-info/

@@ -1,0 +1,17 @@
+# 全局配置：二进制大文件强制存储为 LFS 或不跟踪
+*.onnx text
+*.bin text
+*.safetensors text
+*.pt text
+*.pth text
+
+# Windows 行尾符：纯文本文件统一 LF（开发者按需 git config core.autocrlf input）
+*.py eol=lf
+*.ts eol=lf
+*.js eol=lf
+*.json eol=lf
+*.md eol=lf
+*.html eol=lf
+*.css eol=lf
+*.mjs eol=lf
+*.sh eol=lf
